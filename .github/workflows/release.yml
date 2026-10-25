@@ -46,6 +46,26 @@ jobs:
           } finally {
             if (-not $process.HasExited) { taskkill /PID $process.Id /T /F }
           }
+      - name: Check browser-only launcher on Windows
+        shell: pwsh
+        run: |
+          Start-Sleep -Seconds 2
+          $process = Start-Process -FilePath "$PWD/release/Vedomost-win32-x64/Vedomost.exe" -ArgumentList '--browser' -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              if ($process.HasExited) { throw 'Browser launcher exited unexpectedly.' }
+              try {
+                $response = Invoke-WebRequest 'http://127.0.0.1:19745/' -UseBasicParsing
+                if ($response.StatusCode -eq 200) { $ready = $true; break }
+              } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $ready) { throw 'Browser launcher did not start its local server.' }
+            Start-Sleep -Seconds 3
+            if ($process.HasExited) { throw 'Browser launcher did not remain available.' }
+          } finally {
+            if (-not $process.HasExited) { taskkill /PID $process.Id /T /F }
+          }
       - name: Package archives and upload to draft release
         shell: pwsh
         run: |
@@ -60,5 +80,5 @@ jobs:
             "$hash  $($_.Name)"
           }
           $sums | Set-Content upload/SHA256SUMS.txt -Encoding ascii
-          gh release upload v0.2.0-preview upload/Vedomost-Windows-x64.zip upload/Vedomost-Browser.zip upload/Vedomost-source.zip upload/SHA256SUMS.txt --clobber
+          gh release upload v0.3.0-preview upload/Vedomost-Windows-x64.zip upload/Vedomost-Browser.zip upload/Vedomost-source.zip upload/SHA256SUMS.txt --clobber
           if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }

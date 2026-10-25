@@ -75,3 +75,85 @@ export function aggregate(assemblies, roots) {
   }
   return {groups:[...groups.values()].sort((a,b) => SECTIONS.indexOf(a.item.section)-SECTIONS.indexOf(b.item.section) || a.item.name.localeCompare(b.item.name,'ru') || a.item.code.localeCompare(b.item.code,'ru')), warnings:[...warnings], roots:top};
 }
+
+// Output selection is applied only after the complete assembly calculation.
+export function selectReportGroups(groups, sections) {
+  if (!Array.isArray(sections) || !sections.length) throw Error('Выберите хотя бы один раздел для ТВК.');
+  if (sections.some(s => !SECTIONS.includes(s))) throw Error('Неизвестный раздел ведомости.');
+  const selected = groups.filter(g => sections.includes(g.item.section));
+  if (!selected.length) throw Error('В выбранных разделах нет позиций.');
+  return selected;
+}
+
+export function reportSections(project) {
+  return Array.isArray(project?.report_sections)
+    ? SECTIONS.filter(s => project.report_sections.includes(s))
+    : [...SECTIONS];
+}
+
+// The inspection tree intentionally remains navigable before OCR is corrected.
+// Unknown quantities stay null; missing/cyclic/ambiguous links never get expanded.
+export function buildStructure(assemblies, rootIndex = null, maxNodes = 5000) {
+  const lookup = new Map(), warnings = new Set();
+  assemblies.forEach((a,index) => {
+    const key = norm(a.code);
+    if (key) lookup.set(key, [...(lookup.get(key) ?? []), index]);
+  });
+  const referenced = new Set(assemblies.flatMap(a => a.items.filter(i => i.section === 'Сборочные единицы').map(i => norm(i.code))));
+  let rootIndices = assemblies.map((a,i) => i).filter(i => !referenced.has(norm(assemblies[i].code)));
+  if (rootIndex !== null) {
+    if (!Number.isInteger(rootIndex) || !assemblies[rootIndex]) throw Error('Выберите существующую спецификацию.');
+    rootIndices = [rootIndex];
+  } else if (assemblies.length && !rootIndices.length) {
+    rootIndices = assemblies.map((_a,i) => i);
+    warnings.add('Не найдено головное изделие. Показаны все спецификации: проверьте циклы входимости.');
+  }
+  // Include disconnected cycles too, so no loaded specification disappears.
+  if (rootIndex === null) {
+    const reached = new Set();
+    function mark(index) {
+      if (reached.has(index)) return;
+      reached.add(index);
+      for (const i of assemblies[index].items) if (i.section === 'Сборочные единицы') {
+        for (const child of lookup.get(norm(i.code)) ?? []) mark(child);
+      }
+    }
+    rootIndices.forEach(mark);
+    assemblies.forEach((_a,index) => {
+      if (!reached.has(index)) {
+        rootIndices.push(index); mark(index);
+        warnings.add('Есть отдельная группа сборок без головного изделия. Проверьте циклы и повторяющиеся обозначения.');
+      }
+    });
+  }
+  let count = 0, truncated = false;
+  const quantity = value => {try {return number(value);} catch {return null;}};
+  function children(index,multiplier,path,prefix) {
+    const output = [];
+    for (const [itemIndex,item] of assemblies[index].items.entries()) {
+      if (++count > maxNodes) {truncated = true;break;}
+      const q = quantity(item.quantity);
+      const node = {id:`${prefix}.${itemIndex+1}`,assemblyIndex:index,itemIndex,code:item.code,name:item.name,section:item.section,unit:item.unit,quantity:q,total:q !== null && multiplier !== null ? q.times(multiplier) : null,children:[],status:'ready',message:'',linkedAssembly:null};
+      if (q === null || (q.isZero() && item.section !== 'Документация')) {node.status='invalid';node.message='Проверьте количество';}
+      if (item.section === 'Сборочные единицы') {
+        const matches = lookup.get(norm(item.code)) ?? [];
+        if (!matches.length) {node.status='unresolved';node.message='Нет спецификации';}
+        else if (matches.length > 1) {node.status='ambiguous';node.message='Несколько спецификаций с этим обозначением';}
+        else if (path.includes(matches[0])) {node.status='cycle';node.message='Циклическая входимость';}
+        else if (path.length >= 100) {node.status='limited';node.message='Больше 100 уровней вложенности';}
+        else {
+          node.linkedAssembly=matches[0];
+          node.children=children(matches[0],node.total,[...path,matches[0]],node.id);
+        }
+      }
+      output.push(node);
+    }
+    return output;
+  }
+  const roots = rootIndices.map((index,n) => {
+    const a=assemblies[index],q=quantity(a.root_quantity);
+    return {id:String(n+1),assemblyIndex:index,itemIndex:null,code:a.code,name:a.name,section:'Изделие',unit:'шт.',quantity:q,total:q,children:children(index,q,[index],String(n+1)),status:q === null || q.isZero()?'invalid':'ready',message:q === null || q.isZero()?'Проверьте количество изделий':'',linkedAssembly:index};
+  });
+  if (truncated) warnings.add(`Показаны первые ${maxNodes} позиций структуры. Выберите отдельную спецификацию для просмотра. Расчёт ТВК выполняется по полным данным.`);
+  return {roots,warnings:[...warnings],truncated};
+}

@@ -1,0 +1,38 @@
+{
+  "name": "vedomost",
+  "version": "2.0.0",
+  "description": "Офлайн-ведомость: браузер и Windows",
+  "scripts": {
+    "dev": "vite",
+    "assets": "node scripts/assets.mjs",
+    "build": "npm run assets && vite build && node scripts/service-worker.mjs",
+    "preview": "vite preview",
+    "test": "node --test web/tests/*.test.js",
+    "test:browser": "node scripts/browser-test.mjs",
+    "build:windows": "npm run build && node scripts/windows.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gabitofff-tech/vedomost.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/gabitofff-tech/vedomost/issues"
+  },
+  "homepage": "https://github.com/gabitofff-tech/vedomost#readme",
+  "dependencies": {
+    "decimal.js": "10.6.0",
+    "jszip": "3.10.2",
+    "pdfjs-dist": "6.4.299",
+    "tesseract.js": "7.0.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "playwright-core": "1.64.1",
+    "vite": "8.3.5"
+  },
+  "private": true
+}

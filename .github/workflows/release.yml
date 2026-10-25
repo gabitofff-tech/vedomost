@@ -1,0 +1,64 @@
+name: Build release archives
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/release.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:windows
+      - name: Check native launch and browser workflow on Windows
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "$PWD/release/Vedomost-win32-x64/Vedomost.exe" -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              if ($process.HasExited) { throw 'Vedomost.exe exited before startup completed.' }
+              try {
+                $response = Invoke-WebRequest 'http://127.0.0.1:19745/' -UseBasicParsing
+                if ($response.StatusCode -eq 200) { $ready = $true; break }
+              } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $ready) { throw 'Native application did not start its local server.' }
+            $env:CHROMIUM_PATH = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+            if (-not (Test-Path $env:CHROMIUM_PATH)) {
+              $env:CHROMIUM_PATH = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+            }
+            $env:VEDOMOST_TEST_URL = 'http://127.0.0.1:19745/'
+            node scripts/browser-test.mjs
+            if ($LASTEXITCODE -ne 0) { throw 'Windows browser checks failed.' }
+          } finally {
+            if (-not $process.HasExited) { taskkill /PID $process.Id /T /F }
+          }
+      - name: Package archives and upload to draft release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Compress-Archive -Path release/Vedomost-win32-x64 -DestinationPath upload/Vedomost-Windows-x64.zip
+          Compress-Archive -Path web/dist/* -DestinationPath upload/Vedomost-Browser.zip
+          git archive --format=zip --prefix=Vedomost/ --output=upload/Vedomost-source.zip HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source archive failed.' }
+          $sums = Get-ChildItem upload/*.zip | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          $sums | Set-Content upload/SHA256SUMS.txt -Encoding ascii
+          gh release upload v0.2.0-preview upload/Vedomost-Windows-x64.zip upload/Vedomost-Browser.zip upload/Vedomost-source.zip upload/SHA256SUMS.txt --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }

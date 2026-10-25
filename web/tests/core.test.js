@@ -1,0 +1,21 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {aggregate, emptyItem, validateProject, fmt} from '../src/core.js';
+import {reportPages} from '../src/word.js';
+const item=values=>({...emptyItem(),name:'Деталь',code:'D',...values});
+const assembly=(code,items,root_quantity='1')=>({code,name:code,items,root_quantity,reviewed:true});
+test('nested multipliers and direct occurrences preserve full paths',()=>{
+  const result=aggregate([assembly('R',[item({section:'Сборочные единицы',code:'S',name:'Сборка',quantity:'4'}),item({})],'2'),assembly('S',[item({quantity:'3'})])]);
+  const g=result.groups.find(g=>g.item.code==='D');assert.equal(fmt(g.total),'26');assert.equal(fmt(g.usages.get('R → S')),'24');assert.equal(fmt(g.usages.get('R')),'2');assert.deepEqual(result.roots,['R']);
+});
+test('same part across independent assemblies is merged',()=>{const {groups}=aggregate([assembly('A',[item({})]),assembly('B',[item({quantity:'2'})])]);assert.equal(groups.length,1);assert.equal(fmt(groups[0].total),'3');assert.equal(groups[0].usages.size,2);});
+test('decimal quantities are exact',()=>{const {groups}=aggregate([assembly('A',[item({quantity:'0,1',unit:'м'}),item({quantity:'0,2',unit:'м'})])]);assert.equal(fmt(groups[0].total),'0,3');});
+test('units and standard-item sizes are distinct',()=>{const {groups}=aggregate([assembly('A',[item({section:'Стандартные изделия',name:'Винт М3'}),item({section:'Стандартные изделия',name:'Винт М4'}),item({unit:'м'}),item({unit:'кг'})])]);assert.equal(groups.length,4);});
+test('cycles are detected even without a root',()=>{assert.throws(()=>aggregate([assembly('A',[item({section:'Сборочные единицы',code:'B'})]),assembly('B',[item({section:'Сборочные единицы',code:'A'})])]),/Циклическая/);});
+test('conflicting descriptions block merging',()=>{assert.throws(()=>aggregate([assembly('A',[item({name:'Один'}),item({name:'Другой'})])]),/Различаются/);});
+test('duplicate assembly codes are rejected',()=>{assert.throws(()=>aggregate([assembly('A',[item({})]),assembly('A',[item({})])]),/Две спецификации/);});
+test('missing assembly is explicit and retained',()=>{const result=aggregate([assembly('A',[item({section:'Сборочные единицы',code:'MISSING',quantity:'2'})])]);assert.match(result.warnings[0],/MISSING/);assert.equal(fmt(result.groups[0].total),'2');});
+test('empty and invalid quantities cannot silently disappear',()=>{for(const value of ['','NaN','Infinity','-1','1 м'])assert.throws(()=>aggregate([assembly('A',[item({quantity:value})])]));assert.throws(()=>aggregate([assembly('A',[])]),/нет позиций/);});
+test('project import is compatible with Python format and drops unknown properties',()=>{const project=validateProject({version:1,assemblies:[{...assembly('A',[item({})]),source:'a.pdf',warnings:['OCR'],injected:'ignored'}]});assert.equal(project[0].items[0].name,'Деталь');assert.equal(project[0].injected,undefined);assert.throws(()=>validateProject({version:99,assemblies:[]}),/формат/);});
+test('pagination retains every usage and total',()=>{const {groups}=aggregate([assembly('A',[item({})]),assembly('B',[item({quantity:'2'})])]);const pages=reportPages(groups);const cells=pages.flat(2);assert.ok(cells.includes('A'));assert.ok(cells.includes('B'));assert.ok(cells.includes('=3'));});
+test('large report has first-page and continuation capacities',()=>{const {groups}=aggregate([assembly('A',Array.from({length:60},(_,i)=>item({code:'D'+i,name:'Деталь '+i})))]);const pages=reportPages(groups);assert.ok(pages.length>2);assert.ok(pages[0].length<=23);assert.ok(pages.slice(1).every(p=>p.length<=29));for(let i=0;i<60;i++)assert.ok(pages.flat(2).includes('D'+i));});

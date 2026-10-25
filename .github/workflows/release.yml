@@ -1,4 +1,4 @@
-name: Build release archives
+name: Build and validate release archives
 on:
   push:
     branches: [main]

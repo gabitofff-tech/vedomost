@@ -12,17 +12,19 @@ export function parseWords(words, bounds, section, page, ocr) {
   for (const row of rows) {
     const cells=['','','','',''];
     for (const w of row.words.sort((a,b) => a.x0-b.x0)) {
-      if (!/[\p{L}\p{N}]/u.test(w.text) && !['*','★'].includes(w.text)) continue;
+      if (!/[\p{L}\p{N}]/u.test(w.text) && !['*','★','-','−','–','—'].includes(w.text)) continue;
       const col=bounds.filter(b => (w.x0+w.x1)/2>=b).length;
       cells[col] = `${cells[col]} ${w.text}`.trim();
     }
     let [position,code,name,quantity,note]=cells;
-    if (ocr && code && !/\d[.\-]\d|ГОСТ|ОСТ|ТУ/.test(code)) code='';
+    if (['Детали','Сборочные единицы'].includes(section)) code=code.replace(/\s+/gu,'').replace(/[−–—]/g,'-');
+    const execution=['Детали','Сборочные единицы'].includes(section) && /^-\d+$/.test(code);
+    if (ocr && !execution && code && !/\d[.\-]\d|ГОСТ|ОСТ|ТУ/.test(code)) code='';
     const header=SECTIONS.find(s => name.toLowerCase().includes(s.toLowerCase()));
     if (header) {section=header; active=null; continue;}
     if ((!code && !name) || ['Наименование','Кол.'].includes(name)) continue;
     const docrow=section==='Документация' && code && name;
-    if (/^\d{1,4}$/.test(position) || docrow || (name && /^\d+([.,]\d+)?$/.test(quantity))) {
+    if (execution || /^\d{1,4}$/.test(position) || docrow || (name && /^\d+([.,]\d+)?$/.test(quantity))) {
       const canonical=({M:'м',m:'м','М':'м',kg:'кг',g:'г',mm:'мм',l:'л'})[note]??note;
       const recognizedUnit=['м','кг','г','мм','л','м2','м²','м3','м³'].includes(canonical);
       const unit=recognizedUnit?canonical:section==='Материалы'?'':'шт.';

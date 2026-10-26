@@ -1,6 +1,24 @@
 import Decimal from 'decimal.js';
 export const SECTIONS = ['Сборочные единицы', 'Детали', 'Документация', 'Стандартные изделия', 'Материалы', 'Прочие изделия'];
 export const norm = s => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase().replaceAll('ё', 'е');
+export const compactCode = value => String(value ?? '').replace(/\s+/gu, '').replace(/[−–—]/g, '-');
+const isPart = item => ['Детали','Сборочные единицы'].includes(item.section);
+export function normalizeAssembly(assembly) {
+  let previous = null;
+  const items = assembly.items.map(source => {
+    const item = {...source};
+    if (isPart(item)) {
+      item.code = compactCode(item.code);
+      if (/^-\d+$/.test(item.code) && previous?.section === item.section && previous.code && !previous.code.startsWith('-')) {
+        item.code = previous.code.replace(/-\d+$/, '') + item.code;
+        if (!String(item.name ?? '').trim()) item.name = previous.name;
+      }
+    }
+    previous = item;
+    return item;
+  });
+  return {...assembly, code:compactCode(assembly.code), items};
+}
 export function number(value) {
   let q;
   try { q = new Decimal(String(value).trim().replace(',', '.')); } catch { throw Error(`Неверное количество: «${value}»`); }
@@ -15,10 +33,11 @@ export function validateProject(value) {
     if (!Array.isArray(a.items) || a.items.length > 50000) throw Error('Неверный список позиций.');
     const copy = {code:String(a.code ?? ''), name:String(a.name ?? ''), source:String(a.source ?? ''), root_quantity:String(a.root_quantity ?? '1'), reviewed:a.reviewed === true, warnings:Array.isArray(a.warnings) ? a.warnings.map(String) : []};
     copy.items = a.items.map(item => Object.fromEntries(Object.entries(emptyItem()).map(([key, initial]) => [key, key === 'page' ? Math.max(1, Number(item[key]) || 1) : String(item[key] ?? initial)])));
-    return copy;
+    return normalizeAssembly(copy);
   });
 }
 export function aggregate(assemblies, roots) {
+  assemblies = assemblies.map(normalizeAssembly);
   if (!assemblies.length) throw Error('Добавьте спецификации.');
   const lookup = new Map();
   for (const a of assemblies) {
@@ -27,6 +46,7 @@ export function aggregate(assemblies, roots) {
     if (!a.items.length) throw Error(`${a.code}: нет позиций. Сверьте PDF и добавьте пропущенные строки.`);
     lookup.set(norm(a.code), a);
     for (const i of a.items) {
+      if (isPart(i) && /^-\d+$/.test(i.code)) throw Error(`${a.code}: исполнение ${i.code} не имеет предыдущего полного обозначения. Введите его вручную.`);
       if (!SECTIONS.includes(i.section) || !norm(i.name)) throw Error(`${a.code}: проверьте раздел и наименование позиции ${i.position}.`);
       if (number(i.quantity).isZero() && i.section !== 'Документация') throw Error(`${a.code}: нулевое количество позиции ${i.position}.`);
       if (i.section !== 'Документация' && !norm(i.unit)) throw Error(`${a.code}: укажите единицу измерения позиции ${i.position}.`);
@@ -53,10 +73,14 @@ export function aggregate(assemblies, roots) {
       const parts = ['Детали','Сборочные единицы'].includes(i.section) && norm(i.code) ? [i.section,i.code,i.unit] : [i.section,i.code,i.name,i.unit];
       const key = JSON.stringify(parts.map(norm));
       const previous = groups.get(key);
-      if (previous && ['name','supplier','note'].some(k => norm(previous.item[k]) !== norm(i[k]))) throw Error(`Различаются наименование, поставщик или примечание одинаковой позиции «${i.code || i.name}». Уточните данные.`);
-      const group = previous ?? {item:i, usages:new Map(), total:new Decimal(0)};
+      const group = previous ?? {item:i, usages:new Map(), usageDetails:new Map(), variants:false, total:new Decimal(0)};
       const amount = number(i.quantity).times(multiplier), usage = path.join(' → ');
       group.usages.set(usage, (group.usages.get(usage) ?? new Decimal(0)).plus(amount));
+      const detailKey = JSON.stringify([usage, ...['name','supplier','note'].map(k => norm(i[k]))]);
+      const detail = group.usageDetails.get(detailKey) ?? {path:usage,item:i,quantity:new Decimal(0)};
+      detail.quantity = detail.quantity.plus(amount);
+      group.usageDetails.set(detailKey,detail);
+      if (['name','supplier','note'].some(k => norm(group.item[k]) !== norm(i[k]))) group.variants = true;
       group.total = group.total.plus(amount);
       groups.set(key,group);
       if (i.section === 'Сборочные единицы') {
@@ -67,7 +91,7 @@ export function aggregate(assemblies, roots) {
     }
   }
   for (const code of top) {
-    const a = lookup.get(norm(code));
+    const a = lookup.get(norm(compactCode(code)));
     if (!a) throw Error(`Не найдена сборка ${code}`);
     const count = number(a.root_quantity);
     if (count.isZero()) throw Error(`${code}: количество изделий должно быть больше нуля.`);
@@ -94,6 +118,7 @@ export function reportSections(project) {
 // The inspection tree intentionally remains navigable before OCR is corrected.
 // Unknown quantities stay null; missing/cyclic/ambiguous links never get expanded.
 export function buildStructure(assemblies, rootIndex = null, maxNodes = 5000) {
+  assemblies = assemblies.map(normalizeAssembly);
   const lookup = new Map(), warnings = new Set();
   assemblies.forEach((a,index) => {
     const key = norm(a.code);

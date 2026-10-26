@@ -100,6 +100,50 @@ try {
   await page.screenshot({path:path.join(output,'browser-summary.png'),fullPage:true});
   await page.locator('#sections-tab').click();await page.screenshot({path:path.join(output,'browser-workspace.png'),fullPage:true});
   console.log('PASS section lists, tree navigation, output filtering, nested quantities, editing and project persistence');
+  const variants={version:1,assemblies:[a('A',[{...item(' XX . 123 . 456','2'),supplier:'Завод A',note:'Примечание A'},{...item('-01','1'),name:''}]),a('B',[{...item('XX.123.456','3','Детали','Контакт другой'),supplier:'Завод B',note:'Примечание B'}])]};
+  await page.locator('#project-input').setInputFiles({name:'variants.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(variants))});
+  await page.locator('#summary-tab').click();
+  assert.match(await page.locator('#content').innerText(),/5 шт\./);
+  assert.match(await page.locator('#content').innerText(),/Завод B/);
+  assert.match(await page.locator('#content').innerText(),/XX\.123\.456-01/);
+  await page.locator('#export').click();
+  await downloadFrom(()=>page.locator('#export-form button[type="submit"]').click(),'variants-template.docx');
+  const variantZip=await JSZip.loadAsync(await fs.readFile(path.join(output,'variants-template.docx')));
+  const variantXML=await variantZip.file('word/document.xml').async('string');
+  for(const text of ['Контакт другой','Завод A','Завод B','Примечание A','Примечание B','XX.123.456-01'])assert.ok(variantXML.includes(text),text+' retained in Word');
+  await page.locator('#items-tab').click();
+  await page.locator('tr[data-item="1"] [data-key="code"]').fill(' - 02 ');
+  await page.locator('tr[data-item="1"] [data-key="code"]').blur();
+  assert.equal(await page.locator('tr[data-item="1"] [data-key="code"]').inputValue(),'XX.123.456-02');
+  assert.equal(await page.locator('#reviewed').isChecked(),false);
+  // Small original test PDF, independent of private fixtures and OCR quality.
+  function smallPDF(){
+    const stream='BT /F1 10 Tf 30 770 Td ('+Array(30).fill('header').join(' ')+') Tj ET\nBT /F1 10 Tf 105 500 Td (1) Tj ET\nBT /F1 10 Tf 150 500 Td (DD.123.456) Tj ET\nBT /F1 10 Tf 330 500 Td (Part) Tj ET\nBT /F1 10 Tf 495 500 Td (2) Tj ET';
+    const objects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R] /Count 1 >>','<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>','<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`];
+    let pdf='%PDF-1.4\n';const offsets=[0];
+    objects.forEach((obj,i)=>{offsets.push(Buffer.byteLength(pdf));pdf+=`${i+1} 0 obj\n${obj}\nendobj\n`;});
+    const start=Buffer.byteLength(pdf);pdf+=`xref\n0 6\n0000000000 65535 f \n`+offsets.slice(1).map(n=>String(n).padStart(10,'0')+' 00000 n \n').join('')+`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${start}\n%%EOF`;
+    return Buffer.from(pdf);
+  }
+  const missing={version:1,assemblies:[a('ROOT',[item(' S . 001','2','Сборочные единицы','Сборка')])]};
+  for(const location of ['#structure','#content','#export-warnings']){
+    await page.locator('#project-input').setInputFiles({name:'missing.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(missing))});
+    if(location==='#content')await page.locator('#summary-tab').click();
+    if(location==='#export-warnings')await page.locator('#export').click();
+    const chooserPromise=page.waitForEvent('filechooser');
+    await page.locator(location+' .add-missing').click();
+    const chooser=await chooserPromise;
+    await chooser.setFiles({name:'arbitrary-name.pdf',mimeType:'application/pdf',buffer:smallPDF()});
+    await page.waitForFunction(()=>document.querySelector('#count').textContent==='2');
+    await page.waitForFunction(()=>document.querySelector('#progress').hidden);
+    const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('vedomost-project-v2')));
+    assert.equal(saved.assemblies[1].code,'S.001');assert.equal(saved.assemblies[1].reviewed,false);
+    assert.equal(saved.assemblies[1].items.length,1);
+    assert.equal(await page.locator('#structure .add-missing').count(),0);
+    await page.locator('#reviewed').check();await page.locator('#summary-tab').click();
+    assert.match(await page.locator('#content').innerText(),/4 шт\./);
+  }
+  console.log('PASS compact codes, edition editing, metadata-preserving Word export and PDF upload from all missing-specification warnings offline');
   assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
   console.log('PASS no browser errors or external requests');
 } finally {await browser.close();}

@@ -1,6 +1,7 @@
 import * as pdfjs from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { createWorker, PSM } from 'tesseract.js';
+import { normalizeAssembly } from './core.js';
 import { parseWords } from './parser.js';
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
 const local = path => new URL(path, document.baseURI).href;
@@ -99,6 +100,6 @@ export async function importPDF(file, progress, signal) {
       if(!parsed.items.length)a.warnings.push(`Лист ${n}: позиции не выделены. Проверьте исходник и добавьте их вручную.`);
       canvas.width=canvas.height=1;page.cleanup();
     }
-    return a;
+    return normalizeAssembly(a);
   } finally {signal?.removeEventListener('abort',abort); await worker?.terminate(); await task.destroy();}
 }

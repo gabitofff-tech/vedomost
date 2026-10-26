@@ -80,5 +80,5 @@ jobs:
             "$hash  $($_.Name)"
           }
           $sums | Set-Content upload/SHA256SUMS.txt -Encoding ascii
-          gh release upload v0.3.0-preview upload/Vedomost-Windows-x64.zip upload/Vedomost-Browser.zip upload/Vedomost-source.zip upload/SHA256SUMS.txt --clobber
+          gh release upload v0.3.1-preview upload/Vedomost-Windows-x64.zip upload/Vedomost-Browser.zip upload/Vedomost-source.zip upload/SHA256SUMS.txt --clobber
           if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }

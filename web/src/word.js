@@ -21,8 +21,9 @@ export function reportPages(groups) {
     const i=g.item, rows=[];
     if(previous!==i.section){rows.push(['',i.section,'','','','','']);previous=i.section;}
     let index=0;
-    for(const [path,quantity] of g.usages) {
-      const cells=['',index===0?i.name:'',index===0?i.code:'',index===0?i.supplier:'',path,i.section==='Документация'?'':fmt(quantity),[i.unit==='шт.'?'':i.unit,i.note].filter(Boolean).join(' ')];
+    const details=g.usageDetails ? [...g.usageDetails.values()] : [...g.usages].map(([path,quantity])=>({path,quantity,item:i}));
+    for(const {path,quantity,item:source} of details) {
+      const cells=['',index===0||g.variants?source.name:'',index===0?i.code:'',source.supplier,path,i.section==='Документация'?'':fmt(quantity),[i.unit==='шт.'?'':i.unit,source.note].filter(Boolean).join(' ')];
       const parts=cells.map((c,n)=>wrap(c,[3,27,26,27,25,7,31][n]));
       for(let n=0;n<Math.max(...parts.map(p=>p.length));n++)rows.push(parts.map(p=>p[n]??''));
       index++;

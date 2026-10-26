@@ -176,6 +176,38 @@ try {
     await page.locator('#export').click();await downloadFrom(()=>page.locator('#export-form button[type="submit"]').click(),'landscape-template.docx');
     console.log('PASS supplied landscape PDF: 14 rows, 6 executions, exact wire/braid quantities, matrix review and Word offline');
   }
+  const longProject={version:1,assemblies:[a('LONG',Array.from({length:100},(_,i)=>({...item('D.'+i,'1'),position:String(i+1)})))]};
+  await page.locator('#project-input').setInputFiles({name:'long.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(longProject))});
+  await page.locator('#items-tab').click();
+  const row=page.locator('tr[data-item="90"]');
+  await row.locator('[data-key="code"]').fill(' D . 90 ');
+  const scrollBefore=await page.locator('#content .table-scroll').evaluate(el=>el.scrollTop);
+  const originalRow=await row.elementHandle();
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(()=>document.activeElement?.dataset.key),'name','Tab advances after designation normalization');
+  assert.ok(await originalRow.evaluate(el=>el.isConnected),'Editing preserves row DOM');
+  const scrollAfter=await page.locator('#content .table-scroll').evaluate(el=>el.scrollTop);
+  assert.ok(Math.abs(scrollAfter-scrollBefore)<16,'Tab keeps the edited row in view (small native focus adjustment allowed)');
+  assert.equal(await row.locator('[data-key="code"]').inputValue(),'D.90');
+  await row.locator('[data-key="section"]').focus();await row.locator('[data-key="section"]').selectOption('Прочие изделия');await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(()=>document.activeElement?.dataset.key),'position','Section change preserves Tab order');
+  await page.locator('#section-filter').selectOption('Детали');
+  for(let n=100;n<102;n++){
+    await page.locator('#add-item').click();
+    assert.equal(await page.locator('#section-filter').inputValue(),'Детали','Adding retains section filter');
+    assert.equal(await page.evaluate(()=>document.activeElement?.closest('tr')?.dataset.item),String(n),'New row receives focus');
+    const visible=await page.evaluate(()=>{const input=document.activeElement,r=input.getBoundingClientRect(),t=input.closest('.table-scroll').getBoundingClientRect();return r.top>=t.top&&r.bottom<=t.bottom&&r.left>=t.left&&r.right<=t.right;});
+    assert.equal(visible,true,'New input is visible in both scroll axes');
+    await page.keyboard.type(String(n+1));await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(()=>document.activeElement?.dataset.key),'code');
+    await page.keyboard.type(' D . '+n);await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(()=>document.activeElement?.dataset.key),'name');
+    await page.keyboard.type('Новая деталь');await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(()=>document.activeElement?.dataset.key),'quantity');
+    await page.keyboard.press('Shift+Tab');assert.equal(await page.evaluate(()=>document.activeElement?.dataset.key),'name');
+    assert.equal(await page.evaluate(()=>document.activeElement?.closest('tr')?.dataset.item),String(n));
+  }
+  console.log('PASS long-table scrolling, repeated row addition, normalized codes, section changes, Tab and Shift+Tab');
   assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
   console.log('PASS no browser errors or external requests');
 } finally {await browser.close();}

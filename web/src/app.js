@@ -41,9 +41,9 @@ function quantityLabel(item,a){return a.executions?.length?a.executions.map(e=>`
 function quantityInputs(item,a,index){return a.executions?.length?`<div class="execution-quantities">${a.executions.map(e=>`<label>${e==='-'?'—':e}<input data-execution="${escape(e)}" value="${escape(item.quantities?.[e]??'')}" aria-label="Количество ${e}, позиция ${index+1}"></label>`).join('')}</div>`:`<input data-key="quantity" value="${escape(item.quantity)}" aria-label="quantity, позиция ${index+1}" inputmode="decimal">`;}
 function assemblyHeading(a){return `<div class="assembly-details"><label>Обозначение сборки<input id="assembly-code" value="${escape(a.code)}"></label><label>Наименование<input id="assembly-name" value="${escape(a.name)}"></label><label class="quantity-label">Кол-во изделий<input id="assembly-quantity" value="${escape(a.root_quantity)}" inputmode="decimal"></label></div>${a.executions?.length?`<label class="execution-selector">Исполнение головного изделия (для расчёта)<select id="root-execution">${a.executions.map(e=>`<option value="${escape(e)}" ${e===(a.root_execution??a.executions[0])?'selected':''}>${escape(executionCode(a.code,e))}${e==='-'?' — базовое':''}</option>`).join('')}</select></label><p class="execution-note">Один PDF на все исполнения. Вложенная сборка выбирает колонку по своему обозначению. Прочерк в количестве исключает позицию; пустую ячейку уточните.</p>`:''}<div class="source-row"><button id="source">Открыть исходный PDF ↗</button><button id="remove-assembly" class="danger">Удалить спецификацию</button></div><details class="warnings"><summary>Что проверить перед расчётом</summary><ul>${a.warnings.map(w=>`<li>${escape(w)}</li>`).join('')}</ul></details>`;}
 function reviewFooter(a){return `<div class="table-bottom"><button id="add-item">＋ Добавить позицию</button><label class="check"><input id="reviewed" type="checkbox" ${a.reviewed?'checked':''}>Все страницы и количества сверены с PDF</label></div>`;}
-function openItem(assemblyIndex,itemIndex){
-  selected=assemblyIndex;sectionFilter='';tab=itemIndex===null?'sections':'items';render();
-  if(itemIndex!==null){const row=document.querySelector(`tr[data-item="${itemIndex}"]`);row?.classList.add('highlight-row');row?.scrollIntoView({block:'nearest',inline:'nearest'});row?.querySelector('[data-key="name"]')?.focus({preventScroll:true});}
+function openItem(assemblyIndex,itemIndex,focusKey='name',keepFilter=false){
+  selected=assemblyIndex;if(!keepFilter)sectionFilter='';tab=itemIndex===null?'sections':'items';render();
+  if(itemIndex!==null){const row=document.querySelector(`tr[data-item="${itemIndex}"]`);row?.classList.add('highlight-row');const input=row?.querySelector(`[data-key="${focusKey}"]`);input?.focus({preventScroll:true});input?.scrollIntoView({block:'nearest',inline:'nearest'});}
 }
 function bindAssembly(a){
   if($('root-execution'))$('root-execution').onchange=e=>{a.root_execution=e.target.value;saveLocal();renderRight();};
@@ -51,7 +51,7 @@ function bindAssembly(a){
   $('remove-assembly').onclick=()=>{if(confirm('Удалить спецификацию из проекта? Исходный PDF останется у вас.')){assemblies.splice(selected,1);selected=Math.max(0,Math.min(selected,assemblies.length-1));treeRoot=null;treeClosed.clear();treeOpened.clear();saveLocal();render();}};
   $('source').onclick=()=>{const url=previews.get(a.source);if(url)window.open(url,'_blank','noopener');else toast('Исходный PDF не хранится в JSON. Откройте сохранённый PDF на компьютере для сверки.',true);};
   $('reviewed').onchange=e=>{try{if(e.target.checked){if(!a.items.length)throw Error('Добавьте позиции спецификации.');for(const i of a.items){if(a.executions?.length){for(const e of a.executions)number(executionQuantity(i,e));}else number(i.quantity);if(!i.name.trim())throw Error('Заполните наименования всех позиций.');if(i.section!=='Документация'&&!i.unit.trim())throw Error('Укажите единицы измерения: некоторые не удалось распознать.');}}a.reviewed=e.target.checked;saveLocal();renderList();}catch(err){e.target.checked=false;toast(err.message,true);}};
-  $('add-item').onclick=()=>{const i={...newItem(a),section:sectionFilter||'Детали'};a.items.push(i);invalidate(a);openItem(selected,a.items.length-1);};
+  $('add-item').onclick=()=>{const i={...newItem(a),section:sectionFilter||'Детали'};a.items.push(i);invalidate(a);openItem(selected,a.items.length-1,'position',true);};
 }
 function renderContent(){
   $('executions-tab').hidden=!selectedAssembly()?.executions?.length;
@@ -78,7 +78,11 @@ function renderContent(){
   $('section-filter').onchange=e=>{sectionFilter=e.target.value;renderContent();};
   document.querySelectorAll('tr[data-item]').forEach(row=>{
     row.querySelectorAll('[data-execution]').forEach(input=>input.onchange=()=>{const item=a.items[Number(row.dataset.item)];item.quantities??={};item.quantities[input.dataset.execution]=input.value.trim();invalidate(a);$('reviewed').checked=false;});
-    row.querySelectorAll('[data-key]').forEach(input=>input.onchange=()=>{const key=input.dataset.key;a.items[Number(row.dataset.item)][key]=key==='page'?Math.max(1,Number(input.value)||1):input.value.trim();input.classList.toggle('needs-value',['quantity','unit','name'].includes(key)&&!input.value.trim());invalidate(a);$('reviewed').checked=false;if(key==='section'||key==='code')renderContent();});
+    row.querySelectorAll('[data-key]').forEach(input=>input.onchange=()=>{const key=input.dataset.key;a.items[Number(row.dataset.item)][key]=key==='page'?Math.max(1,Number(input.value)||1):input.value.trim();input.classList.toggle('needs-value',['quantity','unit','name'].includes(key)&&!input.value.trim());invalidate(a);$('reviewed').checked=false;if(key==='section'||key==='code'){
+      // Keep the original DOM controls: replacing them during blur interrupts Tab
+      // and resets both table scroll axes. Only update normalized values.
+      document.querySelectorAll('.positions tr[data-item]').forEach(current=>{const item=a.items[Number(current.dataset.item)];for(const field of ['code','name']){const control=current.querySelector(`[data-key="${field}"]`);if(control&&control.value!==item[field])control.value=item[field];}});
+    }});
     row.querySelector('.remove-item').onclick=()=>{if(confirm('Удалить эту позицию из проекта?')){a.items.splice(Number(row.dataset.item),1);invalidate(a);renderContent();}};
   });bindAssembly(a);
 }

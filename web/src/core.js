@@ -19,6 +19,46 @@ export function normalizeAssembly(assembly) {
   });
   return {...assembly, code:compactCode(assembly.code), items};
 }
+export const baseCode = code => compactCode(code).replace(/-\d+$/, '');
+export const executionCode = (code, execution) => execution === '-' ? baseCode(code) : `${baseCode(code)}-${execution}`;
+export function executionQuantity(item, execution) {
+  const value = item.quantities?.[execution];
+  if (value === undefined) throw Error(`Нет количества для исполнения ${execution}, позиция ${item.position || item.code}.`);
+  if (/^[—–−-]$/.test(String(value).trim())) return '0';
+  if (item.section === 'Документация' && /^[xх]$/i.test(String(value).trim())) return '0';
+  return String(value);
+}
+// One source PDF can resolve several virtual assemblies; source row indices stay intact.
+export function projectGraph(input) {
+  const sources=input.map(normalizeAssembly), entries=[], lookup=new Map();
+  function add(a,sourceIndex,code,execution=null){
+    const items=[];
+    a.items.forEach((item,sourceItemIndex)=>{
+      const quantity=execution===null?item.quantity:executionQuantity({...item,quantities:{...item.quantities,[execution]:item.quantities?.[execution]??''}},execution);
+      const absent=execution!==null && (String(item.quantities?.[execution]).trim()==='0'||/^[—–−-]$/.test(String(item.quantities?.[execution]).trim()));
+      if(!absent)items.push({...item,quantity,sourceItemIndex});
+    });
+    const entry={...a,code,items,sourceIndex,execution};
+    const index=entries.length;entries.push(entry);
+    lookup.set(norm(code),[...(lookup.get(norm(code))??[]),index]);
+  }
+  sources.forEach((a,index)=>{
+    if(a.executions?.length)for(const execution of a.executions)add(a,index,executionCode(a.code,execution),execution);
+    else add(a,index,a.code);
+  });
+  // Exact specifications win. Plain specifications are shared by their suffix variants.
+  for(const a of sources)for(const item of a.items){
+    if(item.section!=='Сборочные единицы'||lookup.has(norm(item.code))||baseCode(item.code)===item.code)continue;
+    const candidates=sources.map((s,index)=>({s,index})).filter(({s})=>!s.executions?.length&&norm(s.code)===norm(baseCode(item.code)));
+    for(const {s,index} of candidates)add(s,index,item.code);
+  }
+  const referencedSources=new Set(),unresolvedSources=new Set();
+  for(const a of entries)for(const item of a.items)if(item.section==='Сборочные единицы')for(const index of lookup.get(norm(item.code))??[])referencedSources.add(entries[index].sourceIndex);
+  for(const a of entries)for(const item of a.items)if(item.section==='Сборочные единицы'&&!lookup.has(norm(item.code)))sources.forEach((source,index)=>{if(source.executions?.length&&norm(baseCode(source.code))===norm(baseCode(item.code))){referencedSources.add(index);unresolvedSources.add(index);}});
+  const preferred=index=>entries.findIndex(a=>a.sourceIndex===index&&a.code===(sources[index].executions?.length?executionCode(sources[index].code,sources[index].root_execution??sources[index].executions[0]):sources[index].code));
+  const rootIndices=sources.map((_a,index)=>index).filter(index=>!referencedSources.has(index)).map(preferred);
+  return {sources,entries,lookup,rootIndices,preferred,unresolvedSources};
+}
 export function number(value) {
   let q;
   try { q = new Decimal(String(value).trim().replace(',', '.')); } catch { throw Error(`Неверное количество: «${value}»`); }
@@ -33,17 +73,23 @@ export function validateProject(value) {
     if (!Array.isArray(a.items) || a.items.length > 50000) throw Error('Неверный список позиций.');
     const copy = {code:String(a.code ?? ''), name:String(a.name ?? ''), source:String(a.source ?? ''), root_quantity:String(a.root_quantity ?? '1'), reviewed:a.reviewed === true, warnings:Array.isArray(a.warnings) ? a.warnings.map(String) : []};
     copy.items = a.items.map(item => Object.fromEntries(Object.entries(emptyItem()).map(([key, initial]) => [key, key === 'page' ? Math.max(1, Number(item[key]) || 1) : String(item[key] ?? initial)])));
+    if (a.executions !== undefined) {
+      if (!Array.isArray(a.executions) || !a.executions.length || a.executions.length>100 || a.executions.some(e=>typeof e!=='string'||!/^(-|\d{2,3})$/.test(e)) || new Set(a.executions).size!==a.executions.length) throw Error('Неверные колонки исполнений.');
+      copy.executions=[...a.executions];copy.root_execution=String(a.root_execution??a.executions[0]);
+      if(!copy.executions.includes(copy.root_execution))throw Error('Выбрано неизвестное исполнение изделия.');
+      copy.items.forEach((item,index)=>{item.quantities=Object.fromEntries(copy.executions.map(e=>[e,String(a.items[index].quantities?.[e]??'')]));});
+    }
     return normalizeAssembly(copy);
   });
 }
 export function aggregate(assemblies, roots) {
-  assemblies = assemblies.map(normalizeAssembly);
+  const graph=projectGraph(assemblies);assemblies=graph.entries;
   if (!assemblies.length) throw Error('Добавьте спецификации.');
   const lookup = new Map();
   for (const a of assemblies) {
     if (!norm(a.code)) throw Error('Введите обозначение каждой сборки.');
     if (lookup.has(norm(a.code))) throw Error(`Две спецификации с одним обозначением: ${a.code}`);
-    if (!a.items.length) throw Error(`${a.code}: нет позиций. Сверьте PDF и добавьте пропущенные строки.`);
+    if (!a.items.length && !a.executions?.length) throw Error(`${a.code}: нет позиций. Сверьте PDF и добавьте пропущенные строки.`);
     lookup.set(norm(a.code), a);
     for (const i of a.items) {
       if (isPart(i) && /^-\d+$/.test(i.code)) throw Error(`${a.code}: исполнение ${i.code} не имеет предыдущего полного обозначения. Введите его вручную.`);
@@ -62,10 +108,9 @@ export function aggregate(assemblies, roots) {
     seen.add(key);
   }
   assemblies.forEach(a => validate(a, []));
-  const referenced = new Set(assemblies.flatMap(a => a.items.filter(i => i.section === 'Сборочные единицы').map(i => norm(i.code))));
-  const top = roots ?? assemblies.filter(a => !referenced.has(norm(a.code))).map(a => a.code);
+  const top = roots ?? graph.rootIndices.map(index=>assemblies[index].code);
   if (!top.length) throw Error('Не найдено головное изделие.');
-  const groups = new Map(), warnings = new Set();
+  const groups = new Map(), warnings = new Set(), missingCodes=new Set();
   let visits = 0;
   function walk(a, multiplier, path) {
     if (++visits > 100000) throw Error('Слишком много путей входимости. Разделите проект на несколько изделий.');
@@ -74,7 +119,7 @@ export function aggregate(assemblies, roots) {
       const key = JSON.stringify(parts.map(norm));
       const previous = groups.get(key);
       const group = previous ?? {item:i, usages:new Map(), usageDetails:new Map(), variants:false, total:new Decimal(0)};
-      const amount = number(i.quantity).times(multiplier), usage = path.join(' → ');
+      const amount = number(i.quantity).times(multiplier), usage = a.code;
       group.usages.set(usage, (group.usages.get(usage) ?? new Decimal(0)).plus(amount));
       const detailKey = JSON.stringify([usage, ...['name','supplier','note'].map(k => norm(i[k]))]);
       const detail = group.usageDetails.get(detailKey) ?? {path:usage,item:i,quantity:new Decimal(0)};
@@ -86,7 +131,7 @@ export function aggregate(assemblies, roots) {
       if (i.section === 'Сборочные единицы') {
         const child = lookup.get(norm(i.code));
         if (child) walk(child, amount, [...path,child.code]);
-        else warnings.add(`Не раскрыта сборка ${i.code || i.name} (входит в ${usage})`);
+        else {warnings.add(`Не раскрыта сборка ${i.code || i.name} (входит в ${usage})`);missingCodes.add(i.code);}
       }
     }
   }
@@ -97,7 +142,7 @@ export function aggregate(assemblies, roots) {
     if (count.isZero()) throw Error(`${code}: количество изделий должно быть больше нуля.`);
     walk(a,count,[a.code]);
   }
-  return {groups:[...groups.values()].sort((a,b) => SECTIONS.indexOf(a.item.section)-SECTIONS.indexOf(b.item.section) || a.item.name.localeCompare(b.item.name,'ru') || a.item.code.localeCompare(b.item.code,'ru')), warnings:[...warnings], roots:top};
+  return {groups:[...groups.values()].sort((a,b) => SECTIONS.indexOf(a.item.section)-SECTIONS.indexOf(b.item.section) || a.item.name.localeCompare(b.item.name,'ru') || a.item.code.localeCompare(b.item.code,'ru')), warnings:[...warnings], missingCodes:[...missingCodes], roots:top};
 }
 
 // Output selection is applied only after the complete assembly calculation.
@@ -118,19 +163,14 @@ export function reportSections(project) {
 // The inspection tree intentionally remains navigable before OCR is corrected.
 // Unknown quantities stay null; missing/cyclic/ambiguous links never get expanded.
 export function buildStructure(assemblies, rootIndex = null, maxNodes = 5000) {
-  assemblies = assemblies.map(normalizeAssembly);
-  const lookup = new Map(), warnings = new Set();
-  assemblies.forEach((a,index) => {
-    const key = norm(a.code);
-    if (key) lookup.set(key, [...(lookup.get(key) ?? []), index]);
-  });
-  const referenced = new Set(assemblies.flatMap(a => a.items.filter(i => i.section === 'Сборочные единицы').map(i => norm(i.code))));
-  let rootIndices = assemblies.map((a,i) => i).filter(i => !referenced.has(norm(assemblies[i].code)));
-  if (rootIndex !== null) {
-    if (!Number.isInteger(rootIndex) || !assemblies[rootIndex]) throw Error('Выберите существующую спецификацию.');
-    rootIndices = [rootIndex];
-  } else if (assemblies.length && !rootIndices.length) {
-    rootIndices = assemblies.map((_a,i) => i);
+  const graph=projectGraph(assemblies);assemblies=graph.entries;
+  const lookup=graph.lookup,warnings=new Set();
+  let rootIndices=[...graph.rootIndices];
+  if(rootIndex!==null){
+    if(!Number.isInteger(rootIndex)||!graph.sources[rootIndex])throw Error('Выберите существующую спецификацию.');
+    rootIndices=[graph.preferred(rootIndex)];
+  }else if(assemblies.length&&!rootIndices.length){
+    rootIndices=graph.sources.map((_a,index)=>graph.preferred(index));
     warnings.add('Не найдено головное изделие. Показаны все спецификации: проверьте циклы входимости.');
   }
   // Include disconnected cycles too, so no loaded specification disappears.
@@ -145,7 +185,7 @@ export function buildStructure(assemblies, rootIndex = null, maxNodes = 5000) {
     }
     rootIndices.forEach(mark);
     assemblies.forEach((_a,index) => {
-      if (!reached.has(index)) {
+      if (!graph.unresolvedSources.has(assemblies[index].sourceIndex)&&![...reached].some(i=>assemblies[i].sourceIndex===assemblies[index].sourceIndex)) {
         rootIndices.push(index); mark(index);
         warnings.add('Есть отдельная группа сборок без головного изделия. Проверьте циклы и повторяющиеся обозначения.');
       }
@@ -158,7 +198,7 @@ export function buildStructure(assemblies, rootIndex = null, maxNodes = 5000) {
     for (const [itemIndex,item] of assemblies[index].items.entries()) {
       if (++count > maxNodes) {truncated = true;break;}
       const q = quantity(item.quantity);
-      const node = {id:`${prefix}.${itemIndex+1}`,assemblyIndex:index,itemIndex,code:item.code,name:item.name,section:item.section,unit:item.unit,quantity:q,total:q !== null && multiplier !== null ? q.times(multiplier) : null,children:[],status:'ready',message:'',linkedAssembly:null};
+      const node = {id:`${prefix}.${itemIndex+1}`,assemblyIndex:assemblies[index].sourceIndex,itemIndex:item.sourceItemIndex,code:item.code,name:item.name,section:item.section,unit:item.unit,quantity:q,total:q !== null && multiplier !== null ? q.times(multiplier) : null,children:[],status:'ready',message:'',linkedAssembly:null};
       if (q === null || (q.isZero() && item.section !== 'Документация')) {node.status='invalid';node.message='Проверьте количество';}
       if (item.section === 'Сборочные единицы') {
         const matches = lookup.get(norm(item.code)) ?? [];
@@ -167,7 +207,7 @@ export function buildStructure(assemblies, rootIndex = null, maxNodes = 5000) {
         else if (path.includes(matches[0])) {node.status='cycle';node.message='Циклическая входимость';}
         else if (path.length >= 100) {node.status='limited';node.message='Больше 100 уровней вложенности';}
         else {
-          node.linkedAssembly=matches[0];
+          node.linkedAssembly=assemblies[matches[0]].sourceIndex;
           node.children=children(matches[0],node.total,[...path,matches[0]],node.id);
         }
       }
@@ -177,7 +217,7 @@ export function buildStructure(assemblies, rootIndex = null, maxNodes = 5000) {
   }
   const roots = rootIndices.map((index,n) => {
     const a=assemblies[index],q=quantity(a.root_quantity);
-    return {id:String(n+1),assemblyIndex:index,itemIndex:null,code:a.code,name:a.name,section:'Изделие',unit:'шт.',quantity:q,total:q,children:children(index,q,[index],String(n+1)),status:q === null || q.isZero()?'invalid':'ready',message:q === null || q.isZero()?'Проверьте количество изделий':'',linkedAssembly:index};
+    return {id:String(n+1),assemblyIndex:a.sourceIndex,itemIndex:null,code:a.code,name:a.name,section:'Изделие',unit:'шт.',quantity:q,total:q,children:children(index,q,[index],String(n+1)),status:q === null || q.isZero()?'invalid':'ready',message:q === null || q.isZero()?'Проверьте количество изделий':'',linkedAssembly:a.sourceIndex};
   });
   if (truncated) warnings.add(`Показаны первые ${maxNodes} позиций структуры. Выберите отдельную спецификацию для просмотра. Расчёт ТВК выполняется по полным данным.`);
   return {roots,warnings:[...warnings],truncated};

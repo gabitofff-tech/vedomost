@@ -35,7 +35,7 @@ test('tree size is bounded and reports truncation',()=>{
 test('excluding assemblies from Word never excludes their nested parts',()=>{
   const {groups}=aggregate([a('R',[item({section:'Сборочные единицы',code:'S',name:'Сборка',quantity:'2'})],'3'),a('S',[item({quantity:'4'})])]);
   const selected=selectReportGroups(groups,['Детали']);assert.equal(selected.length,1);assert.equal(fmt(selected[0].total),'24');
-  assert.equal(selected[0].usages.has('R → S'),true);assert.throws(()=>selectReportGroups(groups,[]),/Выберите/);
+  assert.equal(selected[0].usages.has('S'),true);assert.throws(()=>selectReportGroups(groups,[]),/Выберите/);
 });
 test('section selection is backwards compatible and an empty selection stays empty',()=>{
   assert.deepEqual(reportSections({version:1,assemblies:[]}),SECTIONS);

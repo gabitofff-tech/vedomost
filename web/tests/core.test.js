@@ -4,9 +4,9 @@ import {aggregate, emptyItem, validateProject, fmt, normalizeAssembly, buildStru
 import {reportPages} from '../src/word.js';
 const item=values=>({...emptyItem(),name:'Деталь',code:'D',...values});
 const assembly=(code,items,root_quantity='1')=>({code,name:code,items,root_quantity,reviewed:true});
-test('nested multipliers and direct occurrences preserve full paths',()=>{
+test('nested multipliers and direct occurrences retain immediate parents',()=>{
   const result=aggregate([assembly('R',[item({section:'Сборочные единицы',code:'S',name:'Сборка',quantity:'4'}),item({})],'2'),assembly('S',[item({quantity:'3'})])]);
-  const g=result.groups.find(g=>g.item.code==='D');assert.equal(fmt(g.total),'26');assert.equal(fmt(g.usages.get('R → S')),'24');assert.equal(fmt(g.usages.get('R')),'2');assert.deepEqual(result.roots,['R']);
+  const g=result.groups.find(g=>g.item.code==='D');assert.equal(fmt(g.total),'26');assert.equal(fmt(g.usages.get('S')),'24');assert.equal(fmt(g.usages.get('R')),'2');assert.deepEqual(result.roots,['R']);
 });
 test('same part across independent assemblies is merged',()=>{const {groups}=aggregate([assembly('A',[item({})]),assembly('B',[item({quantity:'2'})])]);assert.equal(groups.length,1);assert.equal(fmt(groups[0].total),'3');assert.equal(groups[0].usages.size,2);});
 test('decimal quantities are exact',()=>{const {groups}=aggregate([assembly('A',[item({quantity:'0,1',unit:'м'}),item({quantity:'0,2',unit:'м'})])]);assert.equal(fmt(groups[0].total),'0,3');});

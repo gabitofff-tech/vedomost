@@ -33,7 +33,7 @@ try {
   console.log('PASS offline reload; cached assets:',cached);
   const fixtureDir=process.env.VEDOMOST_FIXTURES;
   if(fixtureDir){
-    async function find(dir){const files=[];for(const e of await fs.readdir(dir,{withFileTypes:true})){const p=path.join(dir,e.name);if(e.isDirectory())files.push(...await find(p));else if(p.endsWith('.pdf'))files.push(p);}return files;}
+    async function find(dir){const files=[];for(const e of await fs.readdir(dir,{withFileTypes:true})){const p=path.join(dir,e.name);if(e.isDirectory())files.push(...await find(p));else if(/111145\.(111|115)\.pdf$/.test(p))files.push(p);}return files;}
     const files=(await find(fixtureDir)).sort();
     assert.equal(files.length,2,'Expected the two supplied PDF fixtures');
     await page.locator('#pdf-input').setInputFiles(files);
@@ -81,7 +81,7 @@ try {
   await page.locator('#report-sections input[data-section="1"]').check();
   await page.locator('#summary-tab').click();
   assert.match(await page.locator('#content').innerText(),/25 шт\./);
-  assert.match(await page.locator('#content').innerText(),/R → S/);
+  assert.ok(!(await page.locator('#content').innerText()).includes('R → S'),'Applicability shows only direct parent');
   await downloadFrom(()=>page.locator('#save').click(),'saved-project.json');
   const savedProject=JSON.parse(await fs.readFile(path.join(output,'saved-project.json'),'utf8'));
   assert.deepEqual(savedProject.report_sections,['Детали'],'Section selection survives project export');
@@ -144,6 +144,38 @@ try {
     assert.match(await page.locator('#content').innerText(),/4 шт\./);
   }
   console.log('PASS compact codes, edition editing, metadata-preserving Word export and PDF upload from all missing-specification warnings offline');
+  const grouped={version:1,assemblies:[a('R',[item('S-01','2','Сборочные единицы','Сборка'),item('S-02','3','Сборочные единицы','Сборка')]),{...a('S',[{...item('WIRE','','Материалы','Провод'),unit:'м',quantities:{'-':'17','01':'17','02':'12'}}]),executions:['-','01','02'],root_execution:'-'}]};
+  await page.locator('#project-input').setInputFiles({name:'grouped.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(grouped))});
+  await page.locator('#summary-tab').click();assert.match(await page.locator('#content').innerText(),/70 м/);assert.ok(!(await page.locator('#content').innerText()).includes(' → '));
+  assert.equal(await page.locator('#structure .add-missing').count(),0,'One shared PDF resolves both executions');
+  await page.locator('#assemblies [data-index="1"]').click();await page.locator('#items-tab').click();
+  assert.equal(await page.locator('[data-execution="02"]').inputValue(),'12');
+  await page.locator('[data-execution="02"]').fill('13');await page.locator('[data-execution="02"]').blur();
+  assert.equal(await page.locator('#reviewed').isChecked(),false);await page.locator('#reviewed').check();
+  await page.locator('#summary-tab').click();assert.match(await page.locator('#content').innerText(),/73 м/);
+  await page.reload();await page.locator('#summary-tab').click();assert.match(await page.locator('#content').innerText(),/73 м/);
+  await page.locator('#export').click();await downloadFrom(()=>page.locator('#export-form button[type="submit"]').click(),'execution-template.docx');
+  const groupZip=await JSZip.loadAsync(await fs.readFile(path.join(output,'execution-template.docx'))),groupXML=await groupZip.file('word/document.xml').async('string');
+  assert.ok(groupXML.includes('S-01')&&groupXML.includes('S-02')&&groupXML.includes('=73'));assert.ok(!groupXML.includes(' → '));
+  console.log('PASS shared specification executions, matrix editing, persistence, direct-parent applicability and Word');
+  if(process.env.VEDOMOST_LANDSCAPE){
+    await page.locator('#project-input').setInputFiles({name:'empty.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({version:1,assemblies:[]}))});
+    await page.locator('#pdf-input').setInputFiles(process.env.VEDOMOST_LANDSCAPE);
+    await page.waitForFunction(()=>document.querySelector('#count').textContent==='1',{}, {timeout:180000});
+    await page.waitForFunction(()=>document.querySelector('#progress').hidden);
+    const loaded=await page.evaluate(()=>JSON.parse(localStorage.getItem('vedomost-project-v2'))),spec=loaded.assemblies[0];
+    await fs.writeFile(path.join(output,'landscape-project.json'),JSON.stringify(loaded,null,2));
+    assert.deepEqual(spec.executions,['-','01','02','03','04','05']);assert.equal(spec.items.length,14);
+    const wire=spec.items.find(i=>i.position==='16');assert.deepEqual(wire.quantities,{'-':'17','01':'17','02':'12','03':'12','04':'12','05':'12'});assert.equal(wire.unit,'м');
+    const braid=spec.items.find(i=>i.position==='17');assert.equal(braid.quantities['-'],'6,9');assert.equal(braid.quantities['02'],'4,8');
+    await page.locator('#items-tab').click();assert.equal(await page.locator('[data-execution]').count(),84);
+    await page.locator('#executions-tab').click();await page.screenshot({path:path.join(output,'landscape-matrix.png'),fullPage:true});
+    await page.locator('#root-execution').selectOption('02');await page.locator('#reviewed').check();
+    assert.equal(await page.locator('#reviewed').isChecked(),true);
+    await page.locator('#summary-tab').click();assert.match(await page.locator('.summary-table tr').filter({hasText:'16-505.437-82'}).innerText(),/12 м/);
+    await page.locator('#export').click();await downloadFrom(()=>page.locator('#export-form button[type="submit"]').click(),'landscape-template.docx');
+    console.log('PASS supplied landscape PDF: 14 rows, 6 executions, exact wire/braid quantities, matrix review and Word offline');
+  }
   assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
   console.log('PASS no browser errors or external requests');
 } finally {await browser.close();}

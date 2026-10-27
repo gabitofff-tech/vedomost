@@ -46,7 +46,7 @@ try {
       await page.waitForTimeout(1000);
     }
     assert.equal(await page.locator('#progress').isHidden(),true,'Import completed within six minutes');
-    const imported=await page.evaluate(()=>JSON.parse(localStorage.getItem('vedomost-project-v2')));
+    const imported=await page.evaluate(()=>(()=>{const library=JSON.parse(localStorage.getItem('vedomost-projects-v1'));return library.projects.find(p=>p.id===library.activeId).data;})());
     await fs.writeFile(path.join(output,'browser-import.json'),JSON.stringify(imported,null,2));
     console.log('Imported record counts:',imported?.assemblies.map(a=>a.items.length));
     assert.deepEqual(imported.assemblies.map(a=>a.items.length).sort((a,b)=>a-b),[3,11]);
@@ -136,7 +136,7 @@ try {
     await chooser.setFiles({name:'arbitrary-name.pdf',mimeType:'application/pdf',buffer:smallPDF()});
     await page.waitForFunction(()=>document.querySelector('#count').textContent==='2');
     await page.waitForFunction(()=>document.querySelector('#progress').hidden);
-    const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('vedomost-project-v2')));
+    const saved=await page.evaluate(()=>(()=>{const library=JSON.parse(localStorage.getItem('vedomost-projects-v1'));return library.projects.find(p=>p.id===library.activeId).data;})());
     assert.equal(saved.assemblies[1].code,'S.001');assert.equal(saved.assemblies[1].reviewed,false);
     assert.equal(saved.assemblies[1].items.length,1);
     assert.equal(await page.locator('#structure .add-missing').count(),0);
@@ -163,7 +163,7 @@ try {
     await page.locator('#pdf-input').setInputFiles(process.env.VEDOMOST_LANDSCAPE);
     await page.waitForFunction(()=>document.querySelector('#count').textContent==='1',{}, {timeout:180000});
     await page.waitForFunction(()=>document.querySelector('#progress').hidden);
-    const loaded=await page.evaluate(()=>JSON.parse(localStorage.getItem('vedomost-project-v2'))),spec=loaded.assemblies[0];
+    const loaded=await page.evaluate(()=>(()=>{const library=JSON.parse(localStorage.getItem('vedomost-projects-v1'));return library.projects.find(p=>p.id===library.activeId).data;})()),spec=loaded.assemblies[0];
     await fs.writeFile(path.join(output,'landscape-project.json'),JSON.stringify(loaded,null,2));
     assert.deepEqual(spec.executions,['-','01','02','03','04','05']);assert.equal(spec.items.length,14);
     const wire=spec.items.find(i=>i.position==='16');assert.deepEqual(wire.quantities,{'-':'17','01':'17','02':'12','03':'12','04':'12','05':'12'});assert.equal(wire.unit,'м');
@@ -208,6 +208,31 @@ try {
     assert.equal(await page.evaluate(()=>document.activeElement?.closest('tr')?.dataset.item),String(n));
   }
   console.log('PASS long-table scrolling, repeated row addition, normalized codes, section changes, Tab and Shift+Tab');
+  const firstId=await page.locator('#project-select').inputValue();
+  const firstCount=await page.locator('#count').innerText();
+  await page.locator('#new-project').click();await page.locator('#project-name').fill('Вторая ведомость');await page.locator('#project-form button[type="submit"]').click();
+  const secondId=await page.locator('#project-select').inputValue();assert.notEqual(firstId,secondId);assert.equal(await page.locator('#count').innerText(),'0');
+  assert.equal(await page.locator('#report-sections input:checked').count(),6,'New project has independent settings');
+  await page.locator('#report-sections input[data-section="0"]').uncheck();
+  await page.locator('#project-select').selectOption(firstId);assert.equal(await page.locator('#count').innerText(),firstCount);
+  assert.equal(await page.locator('#section-count').innerText(),'6 ИЗ 6');
+  await page.locator('#project-select').selectOption(secondId);assert.equal(await page.locator('#report-sections input[data-section="0"]').isChecked(),false);
+  await page.locator('#rename-project').click();await page.locator('#project-name').fill('Ведомость Б');await page.locator('#project-form button[type="submit"]').click();
+  await page.reload();assert.equal(await page.locator('#project-select').inputValue(),secondId);assert.equal(await page.locator('#project-select option:checked').innerText(),'Ведомость Б');assert.equal(await page.locator('#count').innerText(),'0');
+  const countBeforeImport=await page.locator('#project-select option').count();
+  await page.locator('#project-input').setInputFiles({name:'separate.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({version:1,project_name:'Из файла',assemblies:[a('SEPARATE',[item('D','1')])],export_settings:{title:'Изделие из файла',designation:'ТВК Б'},change_sheet:false}))});
+  await page.waitForFunction(n=>document.querySelector('#project-select').options.length===n+1,countBeforeImport);
+  assert.equal(await page.locator('#project-select option:checked').innerText(),'Из файла');
+  await page.locator('#export').click();assert.equal(await page.locator('[name="title"]').inputValue(),'Изделие из файла');assert.equal(await page.locator('[name="changeSheet"]').isChecked(),false);
+  await page.locator('[name="title"]').fill('Изменённое изделие');await page.locator('#export-cancel').click();const importedId=await page.locator('#project-select').inputValue();
+  await page.locator('#project-select').selectOption(firstId);assert.equal(await page.locator('[name="title"]').inputValue(),'Изделие');
+  await page.locator('#project-select').selectOption(importedId);assert.equal(await page.locator('[name="title"]').inputValue(),'Изменённое изделие');
+  await downloadFrom(()=>page.locator('#save').click(),'named-project.json');assert.equal(JSON.parse(await fs.readFile(path.join(output,'named-project.json'),'utf8')).project_name,'Из файла');
+  // A separate browser profile simulates upgrading from the old single-project app.
+  const migrationContext=await browser.newContext();await migrationContext.addInitScript(value=>{if(!localStorage.getItem('seeded')){localStorage.setItem('vedomost-project-v2',JSON.stringify(value));localStorage.setItem('seeded','1');}},{version:1,assemblies:[a('LEGACY',[item('D','2')])],report_sections:['Детали']});
+  const migration=await migrationContext.newPage();await migration.goto(base);await migration.locator('#project-select').waitFor();assert.equal(await migration.locator('#count').innerText(),'1');assert.match(await migration.locator('#assemblies').innerText(),/LEGACY/);
+  await migration.reload();assert.equal(await migration.locator('#project-select option').count(),1);assert.equal(await migration.locator('#report-sections input:checked').count(),1);assert.ok(await migration.evaluate(()=>localStorage.getItem('vedomost-project-v2')));await migrationContext.close();
+  console.log('PASS independent projects, switching, creation, renaming, JSON import/export, Word settings, restart and legacy migration');
   assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
   console.log('PASS no browser errors or external requests');
 } finally {await browser.close();}
